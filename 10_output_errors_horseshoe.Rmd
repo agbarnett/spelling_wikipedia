@@ -1,0 +1,427 @@
+---
+title: "Results for predictors of spelling mistakes using the Bayesian Poisson model with horseshoe priors"
+author: "Adrian Barnett"
+output: word_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "reports") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+
+library(dplyr)
+library(janitor)
+library(flextable)
+library(tidyr)
+library(stringr)
+library(countrycode)
+source('99_functions.R') # for my_country_long
+
+# graphics:
+library(ggtext) # for element_rmarkdown
+library(ggplot2)
+library(gridExtra)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+# colour blind friendly palette
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7") 
+# alternating colours for country plot
+acolors = c('black','grey55')
+
+# get the data, from 7_make_analysis_ready.R
+load('data/7_analysis_data.RData')
+# get error counts per paper
+for_model = group_by(data, pmid, pubmed_date, typeo, country, publisher, case, word_count, n_authors) %>%
+  summarise(count = n()) %>% # number of errors
+  ungroup() %>%
+  mutate(count = ifelse(case == 0, 0, count)) 
+
+# get the results
+load('data/9_results_poisson_errors_horseshoe.RData') # from 9_combine_results.R on aqua
+```
+
+We modelled the counts of spelling errors per abstract. The sample size was `r format(sample_size, big.mark=',')` abstracts.
+
+## Article types
+
+#### Table
+
+```{r}
+to_table = filter(df, str_detect(var, '^beta3')) %>%
+  select(var, mean, lower, upper, pval) %>%
+  mutate(var = case_when(
+    var == 'beta3[1]' ~ 'Article (reference)',
+    var == 'beta3[2]' ~ "Editorial",
+    var == 'beta3[3]' ~ "Erratum",
+    var == 'beta3[4]' ~ "Letter",
+    var == 'beta3[5]' ~ "Other",
+    var == 'beta3[6]' ~ "Preprint",
+    var == 'beta3[7]' ~ "Retraction",
+    var == 'beta3[8]' ~ "Review",
+    TRUE ~ as.character(var)
+  ),
+  mean = exp(mean), # convert to rate ratio
+  lower = exp(lower),
+  upper = exp(upper),
+  pval = format.pval(pval, digits=2, eps = 0.0001),
+  lower = ifelse(var =='Article (reference)', NA, lower), # this is the reference category
+  upper = ifelse(var =='Article (reference)', NA, upper),
+  pval = ifelse(var =='Article (reference)', NA, pval)) %>%
+  rename('posterior probability' = 'pval')
+ftab = flextable(to_table) %>%
+  theme_box() %>%
+  colformat_double(j=2:4, digits=2) %>%
+  autofit() 
+ftab
+```
+
+The table shows the mean, 95% credible interval, and posterior probability that the estimate is zero.
+
+#### Plot
+
+```{r articles, fig.height = 3}
+# get numbers from data for labels
+labels = group_by(for_model, typeo) %>%
+  tally() %>%
+  mutate(N = format(n, big.mark = ','),
+         N = str_squish(N),
+         long_label = paste(typeo,'\n(n = ', N,')', sep='')) %>%
+  rename('label' = 'typeo')
+
+# plot article types
+f = as.factor(data$typeo)
+levels = as.character(unique(f))
+numbers = unique(as.numeric(f)) # linking numbers
+fr = data.frame(number = numbers, label = levels)
+articles = filter(df, str_detect(var, '^beta3')) %>%
+  mutate(number = as.numeric(str_remove_all(var, pattern='^beta[0-9]\\[|\\]'))) %>%
+  left_join(fr, by = 'number') %>%
+  arrange(mean) %>%
+  mutate(new_number =  1:n(),
+         mean = exp(mean), # convert to rate ratio
+         lower = exp(lower),
+         upper = exp(upper)) %>%
+  left_join(labels, by='label')
+# line labels
+label1 = data.frame(number_new=0.55, mean=1, label='More errors', i=1, lower=0, upper=0)
+label2 = data.frame(number_new=0.55, mean=1, label='Fewer errors', i=1, lower=0, upper=0)
+# plot
+colour = 'navy'
+gplot = ggplot(data = articles, aes(x = new_number, y = mean, ymin = lower, ymax = upper))+
+  geom_point(col=colour, size=2.5)+
+  geom_errorbar(col=colour, width=0, linewidth=1.05)+
+  scale_x_continuous(limits = c(0.4, nrow(articles)), # make room for labels
+                     breaks = 1:nrow(articles), 
+                     labels = articles$long_label)+
+  scale_y_log10(breaks=c(0.6, 0.75, 1, 1.33, 1.66), 
+                labels=c(0.6, 0.75, 1, 1.33, 1.66))+ # on log scale
+  g.theme +
+  ylab('Rate ratio')+
+  xlab('')+
+  geom_hline(col='dark red', lty=2, yintercept=1)+
+  coord_flip()+
+  geom_text(data=label1, aes(x=number_new, y=mean, label=label), adj=-0.05, size=3)+
+  geom_text(data=label2, aes(x=number_new, y=mean, label=label), adj=1.05, size=3)
+gplot
+# export
+ggsave(filename = 'figures/10_articles_horseshoe_errors.jpg', gplot, width=5, height=4, units='in', dpi=500)
+```
+
+A type of "Article" was the reference category.
+
+## Countries
+
+```{r countries, fig.height=5.5, fig.width=5}
+# extract data, make longer countries using countrycode
+countries = filter(df, str_detect(var, '^beta1.c')) %>%
+  mutate(country_num = as.numeric(str_remove_all(var, pattern='^beta[0-9].c\\[|\\]')),
+         mean = exp(mean), # convert to rate ratio
+         lower = exp(lower),
+         upper = exp(upper)) %>%
+  left_join(country_labels, by = 'country_num')
+
+# labels using countrycode package
+countries = filter(countries, pval< 0.01) %>% # filter by posterior probability
+  arrange(mean) %>% # arrange plot by mean
+  mutate(number_new = 1:n(),
+         country_long = my_country_long(country)) 
+
+
+# labels, could add "than average"
+label1 = data.frame(number_new=0.3, mean=1, label='More errors', i=1, lower=0, upper=0)
+label2 = data.frame(number_new=0.3, mean=1, label='Fewer errors', i=1, lower=0, upper=0)
+# alternating colours
+aacolors = rep(acolors, times = 1 + ceiling(nrow(countries)/2))
+
+# plot
+gplot = ggplot(data = countries, aes(x = number_new, y = mean, ymin = lower, ymax = upper, col=factor(number_new)))+
+  scale_color_manual(NULL, values=aacolors)+
+  geom_point()+
+  geom_errorbar(width=0)+
+  scale_x_continuous(breaks = 1:nrow(countries), labels = countries$country_long)+
+  ylab('Rate ratio')+
+  xlab('')+
+  scale_x_continuous(limits = c(0, nrow(countries)), # make room for labels
+                     breaks = 1:nrow(countries), 
+                     expand = c(0.01,0.01),
+                     labels = function(x, text = countries$country_long) {
+      col <- ifelse(x%%2!=0 , acolors[1], acolors[2])
+      lab <- text
+      glue::glue("<span style = 'color:{col}'>{lab}</span>")
+    }
+    )+
+  scale_y_log10(breaks=c(0.6, 0.8, 1, 1.25, 1.67), 
+                labels=c(0.6, 0.8, 1, 1.25, 1.67))+ # on log scale
+  geom_hline(col='dark red', lty=2, yintercept=1)+
+  coord_flip()+
+  geom_text(data=label1, aes(x=number_new, y=mean, label=label), adj=-0.05, size=3)+
+  geom_text(data=label2, aes(x=number_new, y=mean, label=label), adj=1.05, size=3)+
+  g.theme+
+  theme(axis.text.y = element_markdown(size=8, hjust=1, vjust=0.5),
+        legend.position='none')
+
+gplot
+# export
+ggsave(filename = 'figures/10_countries_horseshoe_errors.jpg', gplot, width=5, height=5.5, units='in', dpi=500)
+```
+
+The plot only shows those countries where there is an over 0.99 probability that the mean is not zero. 
+
+## Publisher 
+
+```{r publishers, fig.height=6.7, fig.width=5.5}
+# extract data and add labels
+publishers = filter(df, str_detect(var, '^beta2')) %>%
+  mutate(publisher_num = as.numeric(str_remove_all(var, pattern='^beta[0-9].c\\[|\\]')),
+         mean = exp(mean), # convert to rate ratio
+         lower = exp(lower),
+         upper = exp(upper)) %>%
+  left_join(publisher_labels, by = 'publisher_num') 
+
+# filter by posterior probability:
+publishers = filter(publishers, pval< 0.01) %>% 
+  arrange(mean) %>% # arrange plot by mean
+  mutate(number_new = 1:n(),
+         publisher = str_squish(publisher),
+         publisher = str_wrap(publisher, width = 35)) # shorten label  
+
+# axes labels, could add "than average"
+label1 = data.frame(number_new=0.3, mean=1, label='More errors', i=1, lower=0, upper=0)
+label2 = data.frame(number_new=0.3, mean=1, label='Fewer errors', i=1, lower=0, upper=0)
+# alternating colours
+aacolors = rep(acolors, times = ceiling(1+nrow(publishers)/2))
+
+# plot
+gplot = ggplot(data = publishers, aes(x = number_new, y = mean, ymin = lower, ymax = upper, col=factor(number_new)))+
+  scale_color_manual(NULL, values=aacolors)+
+  geom_point()+
+  geom_errorbar(width=0)+
+  scale_x_continuous(breaks = 1:nrow(publishers), labels = publishers$publisher)+
+  ylab('Rate ratio')+
+  xlab('')+
+  scale_x_continuous(limits = c(0, nrow(publishers)), # make room for labels
+                     breaks = 1:nrow(publishers), 
+                     expand = c(0.01,0.01),
+                     labels = function(x, text = publishers$publisher) {
+      col <- ifelse(x%%2!=0 , acolors[1], acolors[2])
+      lab <- text
+      glue::glue("<span style = 'color:{col}'>{lab}</span>")
+    }
+    )+
+  scale_y_log10(breaks=c(0.33, 0.6, 1, 1.67, 3), 
+                labels=c(0.33, 0.6, 1, 1.67, 3))+ # on log scale
+  geom_hline(col='dark red', lty=2, yintercept=1)+
+  coord_flip()+
+  geom_text(data=label1, aes(x=number_new, y=mean, label=label), adj=-0.05, size=3)+
+  geom_text(data=label2, aes(x=number_new, y=mean, label=label), adj=1.05, size=3)+
+  g.theme+
+  theme(axis.text.y = element_markdown(size=8, hjust=1, vjust=0.5),
+        legend.position='none')
+gplot
+
+# export
+ggsave(filename = 'figures/10_publishers_horseshoe_errors.jpg', gplot, width=5.5, height=6.7, units='in', dpi=500)
+```
+
+The plot only shows those publishers where there is an over 0.99 probability that the mean is not zero. 
+
+## Author numbers
+
+```{r authors}
+all_samples = rbind(mcmc$samples$chain1, mcmc$samples$chain1)
+index = colnames(all_samples)=='gamma1'
+to_use = all_samples[,index]
+# get estimates for transformed author numbers
+n.authors = c(1:15,20,30)
+to_plot = NULL
+for (auth in n.authors){
+  transformed = (log2(auth) - 2)/1 # same transformation as 8_case_poisson_model_horseshoe.R
+  est = transformed * to_use
+  frame = data.frame(auth = auth,
+                     mean = exp(mean(est)), # rate ratio
+                     lower = exp(quantile(est, 0.025)),
+                     upper = exp(quantile(est, 1- 0.025)))
+  to_plot = bind_rows(to_plot, frame)
+}
+# labels
+label1 = data.frame(auth=29, mean=1, label='More errors', i=1, lower=0, upper=0)
+label2 = data.frame(auth=29, mean=1, label='Fewer errors', i=1, lower=0, upper=0)
+# plot
+colour = "khaki"
+gplot = ggplot(data = to_plot, aes(x = auth, y = mean, ymin = lower, ymax = upper))+
+  geom_line(col = colour, linewidth=1.05)+
+  geom_ribbon(col='NA', fill = colour, alpha = 0.5)+
+  geom_text(data = label1, aes(x=auth, y=mean, label=label), nudge_y=+0.01, adj=1,size=3)+
+  geom_text(data = label2, aes(x=auth, y=mean, label=label), nudge_y=-0.01, adj=1,size=3)+
+  g.theme +
+  ylab('Rate ratio')+
+  xlab(NULL)+ # done below
+  scale_y_log10(breaks=c(0.8,0.9,1,1.11,1.2))+ # log scale
+  scale_x_continuous(expand=c(0,0))+ # no edges
+  geom_hline(col='dark red', lty=2, yintercept=1) # on rate ratio scale
+
+# make histogram
+bins = c(-1,seq(5,30,5))
+for_histo = mutate(for_model,
+     n_authors = ifelse(n_authors>30, 30, n_authors), # truncate to 30 to make bin widths more even in plot
+     n_authors_cat = cut(n_authors, bins)) %>% # create categorical variable, easier to make histogram
+  group_by(n_authors_cat) %>%
+  tally() %>%
+  ungroup() %>%
+  mutate(n = n / 10000) # to squeeze scale on y-axis
+xlabels = c('0 to 5', '6 to 10', '11 to 15', '16 to 20', '21 to 25', '26+')
+hplot = ggplot(data = for_histo, aes(x = n_authors_cat, y=n))+
+  geom_bar(stat = 'identity', fill='khaki3', col='grey77', width=0.99)+
+  xlab('Number of authors')+
+  ylab('Count\n(per 10,000)')+
+  scale_x_discrete(labels = xlabels, expand=c(0,0))+ # no edges
+  scale_y_continuous(labels = scales::comma, expand=c(0,NA))+
+  g.theme+
+  theme(panel.grid.major.x = element_blank())
+
+# put histogram below plot
+layout_matrix = matrix(c(1,2,1,NA), ncol=2) # use matrix to get small blank to right of histogram
+grid.arrange(layout_matrix = layout_matrix, gplot, hplot, nrow = 2, heights = c(1,0.3), widths=c(1,0.03))
+# export
+jpeg('figures/10_author_numbers_horseshoe_errors.jpg', width=5, height=4.5, units='in', res=500)
+grid.arrange(layout_matrix = layout_matrix, gplot, hplot, nrow = 2, heights = c(1,0.3), widths=c(1,0.03))
+invisible(dev.off())
+```
+
+## Residual checks
+
+#### Histogram of deviance residuals
+
+```{r histogram}
+hplot1 = ggplot(mcmc$fitted, aes(x=fitted))+
+  geom_histogram(fill='darkorange1', col='grey88')+
+  ylab('Count')+
+  xlab(NULL)+
+  ggtitle('All residuals')+
+  g.theme
+hplot2 = ggplot(mcmc$fitted, aes(x=fitted))+
+  geom_histogram(fill='darkorange1', col='grey88')+
+  scale_x_continuous(limits=c(NA,1))+
+  ylab('Count')+
+  xlab('Deviance residual')+
+  ggtitle('Truncated at 1')+
+  g.theme
+
+grid.arrange(hplot1, hplot2, nrow = 2)
+```
+
+The residual distribution has a positive skew and there are a few large positive residuals of 3 and over. Reducing the scale to exclude these outliers shows a bimodal distribution with a mode at zero and second mode under 0.5.
+
+#### Invesigate large residuals
+
+```{r large}
+to_show = filter(mcmc$fitted, deviance > 3.5) %>%
+  select(typeo, country, word_count, count, fitted, deviance) %>%
+  rename('type' = 'typeo',
+         'errors' = 'count') %>%
+  arrange(desc(deviance))
+ftab = flextable(to_show) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+These large deviance residuals (over 3.5) are often papers with multiple errors and a small word count. It is relatively unusual for papers with such small word counts to have multiple errors, and the model does not predict this. Other problems are those with six errors.
+
+#### Plot of deviance residuals against fitted values
+
+```{r}
+colours = c("dodgerblue", "cyan", "chartreuse2", "gold", "deeppink2",'black')
+# residual = observed minus fitted (expected)
+label1 = data.frame(fitted=4, deviance=0.2, count=0, label='Fitted < Observed')
+label2 = data.frame(fitted=4, deviance=-0.2, count=0,label='Fitted > Observed')
+splot = ggplot(mcmc$fitted, aes(x=fitted, y=deviance, col=factor(count)))+
+  geom_point(shape = 1) +#, col='grey33')+
+  xlab('Fitted')+
+  ylab('Deviance residual')+
+  geom_hline(lty=2, yintercept=0, col='darkred')+
+  scale_color_manual('Number of\nerrors', values=colours)+
+  geom_text(data = label1, aes(x=fitted, y=deviance, label=label), col = 'grey33', adj=1)+
+  geom_text(data = label2, aes(x=fitted, y=deviance, label=label), col = 'grey33', adj=1)+
+  g.theme+
+  theme(legend.position.inside = TRUE,
+        legend.position = c(0.82,0.7))
+splot
+```
+
+The plot shows a general pattern of positive residuals for small fitted values and negative deviance residuals for large fitted values. 
+
+The large residuals for small fitted values are because some abstracts with multiple spelling errors were not captured by the model. This is because there are likely other predictors of spelling errors that were not included in the model, and also that some errors are stochastic and not predictable.
+
+## Check model convergence
+
+We used `r format(MCMC, big.mark=',', scientific=FALSE)` samples thinned by `r thin` with two chains.
+
+#### Chains for the intercept and author numbers estimates
+
+```{r chains, fig.width=7}
+# combine two chains
+chain1 = data.frame(mcmc$samples$chain1) %>% mutate(s = 1:n())
+chain2 = data.frame(mcmc$samples$chain2) %>% mutate(s = 1:n())
+chains = bind_rows(chain1, chain2, .id = 'chain') %>%
+  clean_names()
+
+# switch from wide to long
+long = reshape2::melt(chains, id=c('s','chain')) %>%
+  filter(str_detect(variable, 'beta0|gamma1')) %>% # just the intercept and author numbers
+  mutate(variable = case_when(
+    variable == 'beta0' ~ 'Intercept',
+    variable == 'gamma1' ~ 'Authors numbers'
+  ))
+  
+# line plot
+cplot = ggplot(data=long, aes(x=s, y=value, col=factor(chain)))+
+  geom_line(lty=2)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())+
+  xlab('Iteration')+
+  ylab('Estimate')+
+  scale_color_manual('Chain', values=cbPalette[2:3])+
+  facet_wrap(~variable, scales = 'free_y')
+cplot
+# add acf?
+```
+
+The chains appear to have converged with good mixing.
+
+#### Densities for the intercept and word count estimates
+
+```{r densities, fig.width=7}
+# add histogram
+# overlapping density plot
+hplot = ggplot(data=long, aes(x=value, fill=factor(chain)))+
+  geom_density(alpha=0.5)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())+
+  xlab('Estimate')+
+  scale_fill_manual('Chain', values=cbPalette[2:3])+
+  facet_wrap(~variable, scales = 'free')
+hplot
+```
+
+

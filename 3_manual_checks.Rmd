@@ -1,0 +1,152 @@
+---
+title: "Report on manual checks of randomly selected spelling errors and controls"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: word_document
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "checks") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+library(dplyr)
+library(flextable)
+library(janitor)
+library(readxl)
+library(pdftools)
+library(stringr)
+library(ggplot2)
+
+# get the data on false positives (errors that were not errors)
+check1 = read_excel('checks/errors_manually_checked1.xlsx') %>%
+  filter(verified != 'na') # remove one ineligible
+# get the false positive data
+check2 = pdf_text('checks/5_check_controls.pdf')
+fn = sum(str_count(check2, pattern = 'ERROR')) # count the false negative errors
+```
+
+This report shows the results of the manual checks of random samples to estimate the false positive and false negative error rates.
+
+To check for false positives, we selected spelling errors flagged by our algorithm from _PubMed_ abstracts. 
+These randomly selected errors were confirmed as errors by manually checking the abstract in _PubMed_ and the publisher's version.
+A false positive is where a word labelled as an error by our algorithm is instead correct. 
+
+To check for false negatives, we randomly sampled 200 control abstracts that we hoped had no spelling errors. 
+The abstracts were pasted into one _Word_ document and checked for errors using the _Word_ spell check using US spelling. 
+We then checked each flagged error.
+
+## Results of the manual check of false positives
+
+```{r first_check}
+tab = tabyl(check1, verified) %>%
+  mutate(percent = percent*100)
+ftab = flextable(tab) %>%
+  autofit() %>%
+  theme_box()
+ftab
+```
+
+All randomly selected spelling errors were confirmed as errors.
+
+## Results of the manual check of false negatives
+
+There were `r fn` abstracts in the 200 randomly selected controls that included a spelling error. The errors included misspelled words due to missing spaces and typos. 
+
+### Bayesian calculations for error rates
+
+```{r}
+# prior is beta(1,22), Pr(error rate <= 0.1) = 0.9
+# data is beta(0,200) for false positives 
+# data is beta(8,192) for false negatives 
+prior_a = 1
+prior_b = 21.8 # by trial and error
+fp_a = filter(check1, verified=='no') %>% nrow()
+fp_b = filter(check1, verified=='yes') %>% nrow()
+fn_a = fn
+fn_b = 200 - fn
+posterior_fp_a = prior_a + fp_a
+posterior_fp_b = prior_b + fp_b
+posterior_fn_a = prior_a + fn_a
+posterior_fn_b = prior_b + fn_b
+#
+x = seq(0,0.15,0.001) # range of errors to examine
+prior = data.frame(x=x, d=dbeta(x, shape1 = prior_a, shape2=prior_b))
+fp = data.frame(x=x, d=dbeta(x, shape1 = posterior_fp_a, shape2 = posterior_fp_b))
+fn = data.frame(x=x, d=dbeta(x, shape1 = posterior_fn_a, shape2 = posterior_fn_b))
+
+# for text
+p_limit = 0.9
+# prior
+upper_error_prior = qbeta(p_limit, shape1 = prior_a, shape2 = prior_b)
+upper_error_prior = round(upper_error_prior*1000)/1000
+# fp
+upper_error_fp = qbeta(p_limit, shape1 = posterior_fp_a, shape2 = posterior_fp_b)
+upper_error_fp = round(upper_error_fp*1000)/1000
+posterior_mode_fp = (posterior_fp_a - 1 )/ (posterior_fp_a+posterior_fp_b-2)
+posterior_mode_fp = round(posterior_mode_fp*1000)/1000
+# fn
+upper_error_fn = qbeta(p_limit, shape1 = posterior_fn_a, shape2 = posterior_fn_b)
+upper_error_fn = round(upper_error_fn*1000)/1000
+posterior_mode_fn = (posterior_fn_a - 1 )/ (posterior_fn_a+posterior_fn_b-2)
+posterior_mode_fn = round(posterior_mode_fn*1000)/1000
+
+# plot
+to_plot = bind_rows(prior, fp, fn, .id='group')
+colours = c('darkseagreen3', "orangered", "mediumorchid3")
+labels = c('Prior for false positives and negatives',
+           'Posterior, false positives',
+           'Posterior, false negatives')
+
+# labels
+y = dbeta(x=posterior_mode_fn, shape1 = posterior_fn_a, shape2 = posterior_fn_b)
+text1 = data.frame(x = posterior_mode_fn, y = y, group = 3) %>%
+  mutate(label = x)
+
+## dotted lines for 90%
+# 
+y = dbeta(x=upper_error_prior, shape1 = prior_a, shape2 = prior_b)
+line1 = data.frame(x = upper_error_prior,
+           y = c(0,y)) 
+# 
+y = dbeta(x=upper_error_fp, shape1 = posterior_fp_a, shape2 = posterior_fp_b)
+line2 = data.frame(x = upper_error_fp,
+           y = c(0,y)) 
+# 
+y = dbeta(x=upper_error_fn, shape1 = posterior_fn_a, shape2 = posterior_fn_b)
+line3 = data.frame(x = upper_error_fn,
+           y = c(0,y))
+lines = bind_rows(line1, line2, line3, .id = 'group')
+# text for posterior
+text2 = filter(lines, y > 0) 
+
+#
+bplot = ggplot(data=to_plot, aes(x=x, y=d, col=factor(group)))+
+  geom_line(linewidth=1.05)+
+  geom_line(data = lines, aes(x=x, y=y, col = factor(group)), linewidth=1.05, lty=5)+
+  geom_text(data = text1, aes(x=x, y=y, label=label), nudge_y=2, show.legend = FALSE)+
+  geom_label(data = text2, aes(x=x, y=y, label=x), nudge_y=2, show.legend = FALSE)+
+  xlab('Error rate')+
+  ylab('Probability density function')+
+  scale_color_manual(NULL, values= colours, labels=labels)+
+  coord_cartesian(ylim=c(0,70))+ # cut upper limit
+  theme_bw()+
+  theme(legend.position = "inside", 
+        legend.position.inside =  c(0.65, 0.85),
+        panel.grid.minor = element_blank())
+bplot
+
+# export
+ggsave('figures/3_error_rates_bayes.jpg', plot = bplot, width = 5, height = 4.5, units='in', dpi = 500)
+```
+
+The upper limit of the y-axis is limited to 70 to avoid squashing the distributions for the prior and false negatives.
+
+We used a Bayesian calculation using the Beta distribution to estimate the false positive and negative rates. We assumed a sloping Beta prior with a declining probability of relatively high error rates and a 90% probability that the error rate is under `r upper_error_prior`. 
+
+For false positives, there were `r fp_a` mistakes in the random sample of 200 abstracts. Combining these data with the prior gives the posterior distribution for false positives with a `r 100*p_limit`% probability that the false positive rate is under `r upper_error_fp`. The posterior mode is a false positive rate of `r posterior_mode_fp`.
+
+For false negatives, there were `r fn_a` mistakes in the random sample of 200 abstracts. Combining these data with the prior gives the posterior distribution for false negatives with a `r 100*p_limit`% probability that the false positive rate is under `r upper_error_fn`. The posterior mode for the false negative rate is `r posterior_mode_fn`.
+
+# Checks of variables in case--control data
+
+To check the data on cases and controls, we randomly selected 50 cases and 50 controls from the final dataset. We checked the journal and publisher, number of authors and first author's country, and publication date. The selections are in `7_manual_checks.html`. There were no errors except for one publisher for PMID = 18799226 published in the journal "Trends in Biotechnology", where the publisher in our data "Elsevier" but would have been better as "Cell Press", although "Elsevier" is the parent company. We noted this was true for all the "Trends" journals, hence we changed the published to "Cell Press" for all these journals.

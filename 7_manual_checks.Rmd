@@ -1,0 +1,62 @@
+---
+title: "Report on manual checks of randomly selected cases and controls"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: html_document
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "checks") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+library(dplyr)
+library(flextable)
+TeachingDemos::char2seed('bristol')
+
+# from 7_make_analysis_ready.R
+load('data/7_analysis_data.RData')
+
+# randomly select 50 case and 50 controls
+n_select = 50
+random_selection = mutate(data, random = runif(n())) %>%
+  group_by(case) %>%
+  arrange(random) %>%
+  slice(1:n_select) %>%
+  select(-random, -citations, -typeo, -date_extracted) %>% # can't check citations; checked date_extracted is reasonable
+  ungroup()
+```
+
+These checks aim to ensure that the final data set of cases and controls is as expected.
+
+
+## Controls
+
+```{r controls, results='asis'}
+controls = filter(random_selection, case==0) %>% 
+  select(-case, -error, -in_title, -in_abstract)
+for (k in 1:n_select){
+  cat('**https://pubmed.ncbi.nlm.nih.gov/', controls$pmid[k],'**\n\n', sep='')
+  tab =  as.data.frame(t(controls[k,])) %>% tibble::rownames_to_column()
+  tab = as.matrix(tab)
+  for (j in 1:nrow(tab)){
+    cat(tab[j,],'\n\n')
+  }
+  cat('\n\n')
+}
+```
+
+## Cases
+
+```{r cases, results='asis'}
+cases = filter(random_selection, case==1) %>% 
+  select(-case)
+for (k in 1:n_select){
+  cat('**https://pubmed.ncbi.nlm.nih.gov/', cases$pmid[k],'**\n\n', sep='')
+  tab =  as.data.frame(t(cases[k,])) %>% tibble::rownames_to_column()
+  tab = as.matrix(tab)
+  for (j in 1:nrow(tab)){
+    cat(tab[j,],'\n\n')
+  }
+  cat('\n\n')
+}
+```

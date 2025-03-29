@@ -1,0 +1,393 @@
+---
+title: "Results for predictors of citations using the Bayesian horseshoe model"
+author: "Adrian Barnett"
+output: word_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "reports") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+
+library(dplyr)
+library(janitor)
+library(flextable)
+library(tidyr)
+library(stringr)
+library(countrycode)
+library(ggtext) # for element_rmarkdown
+library(ggplot2)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+# colour blind friendly palette
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7") 
+# alternating colours for country plot
+acolors = c('black','grey55')
+
+# get the data, from 7_make_analysis_ready.R
+load('data/7_analysis_data.RData')
+# get error counts per paper
+for_model = group_by(data, pmid, pubmed_date, typeo, country, publisher, case, word_count, n_authors) %>%
+  summarise(count = n()) %>% # number of errors
+  ungroup() %>%
+  mutate(count = ifelse(case == 0, 0, count)) # all controls have no errors
+
+# get the results
+load('data/9_results_citation_model_horseshoe.RData') # from 8_citation_model_horseshoe.R and 9_combine_results run on lyra
+```
+
+The sample size for this analysis was `r format(nrow(for_model),big.mark=',')`.
+
+## Table of results
+
+```{r table}
+# first get article types
+f = as.factor(data$typeo)
+levels = as.character(unique(f))
+numbers = unique(as.numeric(f))
+fr = data.frame(number = numbers, label = levels)
+articles = filter(df, str_detect(var, '^beta3')) %>%
+  mutate(number = as.numeric(str_remove_all(var, pattern = '^beta[0-9]\\[|\\]'))) %>%
+  left_join(fr, by = 'number')
+# now get other estimates that suit a table
+other = filter(df, var %in% c('gamma1'))
+# make table with rate ratios
+to_table = bind_rows(other, articles) %>%
+  mutate(var = case_when(
+    var == 'gamma1' ~ 'Authors +5',
+    var == 'gamma2' ~ 'Time', # plotted below instead
+    var == 'gamma3' ~ 'Spelling error (yes vs no)' # plotted below instead
+  ),
+  var = ifelse(is.na(var), label, var), # for articles
+  mean = exp(mean), # convert to RR
+  lower = exp(lower),
+  upper = exp(upper),
+  pval = format.pval(pval, digits=4, eps = 0.001),
+  lower = ifelse(var =='Article', NA, lower), # this is the reference category
+  upper = ifelse(var =='Article', NA, upper),
+  pval = ifelse(var =='Article', NA, pval)
+  ) %>%
+  select(var, mean, lower, upper, pval) %>%
+  rename('posterior probability' = 'pval',
+         'Variable' = 'var') 
+ftab = flextable(to_table) %>%
+  theme_box() %>%
+  colformat_double(j=2:4, digits=2) %>%
+  autofit() 
+ftab
+```
+
+The table shows the mean rate ratio, 95% credible interval, and posterior probability that the estimate is zero.
+
+## Estimate of spelling errors
+
+We used the fractional polynomial approach to allow a potentially non-linear association between spelling errors and citation counts. The best transformation was the squared, and we plot the estimated effects below.
+
+```{r square, fig.width=7, fig.height=4.5}
+# get numbers from data for labels
+labels = group_by(for_model, count) %>%
+  tally() %>%
+  filter(count <=2) %>%
+  mutate(N = format(n, big.mark = ','),
+         N = str_squish(N),
+         label = paste(count,'\n(n = ', N,')', sep='')) %>%
+  pull(label)
+
+# create non-linear estimate
+errors_to_plot = 0:2 # just up to two, see text below
+index = colnames(mcmc$samples$chain1) == 'gamma3'
+ests = rbind(mcmc$samples$chain1, mcmc$samples$chain2)
+ests = ests[, index]
+res = NULL
+for (j in 1:length(ests)){
+  this_res = ests[j] %*% (((1+errors_to_plot)^2)-1) # 
+  res = rbind(res, this_res)
+}
+colmeans = colMeans(res)
+to_plot = NULL
+for (t in 1:ncol(res)){
+  lower = quantile(res[,t], probs=0.025)
+  upper = quantile(res[,t], probs=1-0.025)
+  f = data.frame(errors = errors_to_plot[t],
+                 mean = colmeans[t],
+                 lower = lower,
+                 upper = upper)
+  to_plot = bind_rows(to_plot, f)
+}
+rownames(to_plot) = NULL
+# make rate ratios
+to_plot = mutate(to_plot,
+         mean = exp(mean), # convert to RR
+         lower = exp(lower),
+         upper = exp(upper))
+# plot
+colour = 'darkorchid2'
+gplot = ggplot(data = to_plot, aes(x = errors, y = mean, ymin = lower, ymax = upper))+
+  geom_line(col = colour, linewidth=1.05)+
+  geom_ribbon(fill = colour, alpha = 0.5)+
+  g.theme +
+  ylab('Rate ratio')+
+  xlab('Number of spelling errors')+
+  scale_x_continuous(breaks = 0:2, labels = labels)+
+  scale_y_log10(breaks=seq(0.92,1,0.02))+ #
+  geom_hline(col='dark red', lty=2, yintercept=1) # on rate ratio scale
+gplot
+
+# export
+ggsave(filename = 'figures/10_articles_horseshoe_citations.jpg', gplot, width=5, height=4, units='in', dpi=500)
+```
+
+The maximum number of errors was 4, but we only plot up to 2 as there were very few abstracts with 3 or 4 errors.
+
+## Estimate of time
+
+Time since publication was modelled to account for a greater number of citations for papers that have been published for longer. We used the fractional polynomial approach to allow a potentially non-linear association between time and citation counts. The best transformation was the inverse, and we plot the estimated effects below.
+
+```{r inverse_time, fig.width=7, fig.height=4.5}
+years_to_plot = seq(0.5,15,0.5)
+index = colnames(mcmc$samples$chain1) == 'gamma2'
+ests = rbind(mcmc$samples$chain1, mcmc$samples$chain2)
+ests = ests[, index]
+res = NULL
+for (j in 1:length(ests)){
+  this_res = ests[j] %*% ((1/years_to_plot)-0.14) # inverse and was centred (at around 7 years)
+  res = rbind(res, this_res)
+}
+colmeans = colMeans(res)
+to_plot = NULL
+for (t in 1:ncol(res)){
+  lower = quantile(res[,t], probs=0.025)
+  upper = quantile(res[,t], probs=1-0.025)
+  f = data.frame(time = years_to_plot[t],
+                 mean = colmeans[t],
+                 lower = lower,
+                 upper = upper)
+  to_plot = bind_rows(to_plot, f)
+}
+rownames(to_plot) = NULL
+# make rate ratios
+to_plot = mutate(to_plot,
+         mean = exp(mean), # convert to RR
+         lower = exp(lower),
+         upper = exp(upper))
+# plot
+colour = 'darkseagreen2'
+gplot = ggplot(data = to_plot, aes(x = time, y = mean, ymin = lower, ymax = upper))+
+  geom_line(col = colour, linewidth=1.05)+
+  geom_ribbon(alpha = 0.5, fill = colour)+
+  g.theme +
+  ylab('Rate ratio')+
+  scale_y_log10(breaks=c(0.001, 0.01, 0.1, 0.3, 1))+
+  xlab('Years since publication')+
+  geom_hline(col='dark red', lty=2, yintercept=1) # on rate ratio scale
+gplot
+```
+
+The reference time was 7 years.
+
+The plot shows that, on average, papers accrue citations over time, but the gain in citations slows over time.
+
+## Article types
+
+```{r articles, fig.height = 3}
+# plot article types
+articles_plot = arrange(articles, mean) %>%
+  mutate(new_number =  1:n(),
+         mean = exp(mean), # convert to RR
+         lower = exp(lower),
+         upper = exp(upper))
+# plot
+colour = 'dodgerblue'
+gplot = ggplot(data = articles_plot, aes(x = new_number, y = mean, ymin = lower, ymax = upper))+
+  geom_point(col = colour)+
+  geom_errorbar(width=0, col = colour, linewidth=1.05)+
+  scale_x_continuous(breaks = 1:nrow(articles_plot), labels = articles_plot$label)+
+  g.theme +
+  ylab('Rate ratio')+
+  scale_y_log10()+
+  xlab('')+
+  geom_hline(col='dark red', lty=2, yintercept=1)+ # on rate ratio scale
+  coord_flip()
+gplot
+# export
+ggsave(filename = 'figures/10_error_counts_horseshoe_citations.jpg', gplot, width=5, height=4, units='in', dpi=500)
+```
+
+A type of "Article" was the reference category. Article type had a very strong effect on citation counts.
+
+The credible intervals around most of the estimates are very narrow.
+
+## Countries
+
+```{r countries, fig.height=7, fig.width=5}
+# extract data, make longer countries using countrycode
+countries = filter(df, str_detect(var, '^beta1.c')) %>%
+  mutate(country_num = as.numeric(str_remove_all(var, pattern='^beta1.c\\[|\\]')),
+         mean = exp(mean), # convert to RR
+         lower = exp(lower),
+         upper = exp(upper)) %>%
+  left_join(country_labels, by = 'country_num')
+
+# labels using countrycode package
+countries = filter(countries, pval< 0.01) %>% # filter by posterior probability
+  arrange(mean) %>% # arrange plot by mean
+  mutate(number_new = 1:n(),
+         country_long = countrycode(country, # add longer country labels
+                                    origin ='genc2c', 
+                                    destination ='country.name'),
+         country_long = str_remove_all(country_long, pattern='[A-Z]{3} [A-Z|a-z]{5}'), # tidy
+         country_long = case_when(
+           country == 'Missing' ~ 'Missing',
+           country == 'Other' ~ 'Other',
+           TRUE ~ as.character(country_long)
+         ),
+         country_long = str_squish(country_long)) 
+
+# alternating colours
+aacolors = rep(acolors, times = 1 + ceiling(nrow(countries)/2))
+
+# plot
+gplot = ggplot(data = countries, aes(x = number_new, y = mean, ymin = lower, ymax = upper, col=factor(number_new)))+
+  scale_color_manual(NULL, values=aacolors)+
+  geom_point()+
+  geom_errorbar(width=0)+
+  scale_x_continuous(breaks = 1:nrow(countries), labels = countries$country_long)+
+  scale_y_log10()+
+  ylab('Rate ratio')+
+  xlab('')+
+  scale_x_continuous(limits = c(0, nrow(countries)), # make room for labels
+                     breaks = 1:nrow(countries), 
+                     expand = c(0.01,0.01),
+                     labels = function(x, text = countries$country_long) {
+      col <- ifelse(x%%2!=0 , acolors[1], acolors[2])
+      lab <- text
+      glue::glue("<span style = 'color:{col}'>{lab}</span>")
+    }
+    )+
+  geom_hline(col='dark red', lty=2, yintercept=1)+ # 
+  coord_flip()+
+  g.theme+
+  theme(axis.text.y = element_markdown(size=8, hjust=1, vjust=0.5),
+        legend.position='none')
+
+gplot
+# export
+ggsave(filename = 'figures/10_countries_horseshoe_citations.jpg', gplot, width=5, height=7, units='in', dpi=500)
+```
+
+The plot only shows those countries where there is an over 0.99 probability that the mean is not zero. 
+
+The credible intervals for most countries are very narrow and so not visible.
+
+## Publisher 
+
+```{r publishers, fig.height=7, fig.width=6}
+# extract data and add labels
+publishers = filter(df, str_detect(var, '^beta2.c')) %>%
+  mutate(publisher_num = as.numeric(str_remove_all(var, pattern='^beta2.c\\[|\\]')),
+         mean = exp(mean), # convert to RR
+         lower = exp(lower),
+         upper = exp(upper)) %>%
+  left_join(publisher_labels, by = 'publisher_num') 
+
+# filter by posterior probability:
+publishers = filter(publishers, pval< 0.01) %>% 
+  arrange(mean) %>% # arrange plot by mean
+  mutate(number_new = 1:n(),
+         publisher = str_squish(publisher),
+         publisher = str_wrap(publisher, width = 35)) # shorten label  
+
+# axes labels, could add "than average"
+label1 = data.frame(number_new=0.3, mean=1, label='More citations', i=1, lower=0, upper=0)
+label2 = data.frame(number_new=0.3, mean=1, label='Fewer citations', i=1, lower=0, upper=0)
+# alternating colours
+aacolors = rep(acolors, times = ceiling(1+nrow(publishers)/2))
+
+# plot
+gplot = ggplot(data = publishers, aes(x = number_new, y = mean, ymin = lower, ymax = upper, col=factor(number_new)))+
+  scale_color_manual(NULL, values=aacolors)+
+  geom_point()+
+  geom_errorbar(width=0)+
+  scale_x_continuous(breaks = 1:nrow(publishers), labels = publishers$publisher)+
+  scale_y_log10()+
+  ylab('Rate ratio')+
+  xlab('')+
+  scale_x_continuous(limits = c(0, nrow(publishers)), # make room for labels
+                     breaks = 1:nrow(publishers), 
+                     expand = c(0.01,0.01),
+                     labels = function(x, text = publishers$publisher) {
+      col <- ifelse(x%%2!=0 , acolors[1], acolors[2])
+      lab <- text
+      glue::glue("<span style = 'color:{col}'>{lab}</span>")
+    }
+    )+
+  geom_hline(col='dark red', lty=2, yintercept=1)+ # 
+  coord_flip()+
+  geom_text(data=label1, aes(x=number_new, y=mean, label=label), adj=-0.05, size=3)+
+  geom_text(data=label2, aes(x=number_new, y=mean, label=label), adj=1.05, size=3)+
+  g.theme+
+  theme(axis.text.y = element_markdown(size=8, hjust=1, vjust=0.5),
+        legend.position='none')
+gplot
+
+# export
+ggsave(filename = 'figures/10_publishers_horseshoe_citations.jpg', gplot, width=5, height=7, units='in', dpi=500)
+```
+
+The plot only shows those publishers where there is an over 0.99 probability that the mean is not zero. 
+
+The credible intervals for most publishers are very narrow and so not visible.
+
+### Check model convergence
+
+We used `r format(MCMC, big.mark=',', scientific=FALSE)` samples thinned by `r thin` with two chains.
+
+#### Chains for the intercept and word count estimates
+
+```{r chains, fig.width=7}
+# combine two chains
+chain1 = data.frame(mcmc$samples$chain1) %>% mutate(s = 1:n())
+chain2 = data.frame(mcmc$samples$chain2) %>% mutate(s = 1:n())
+chains = bind_rows(chain1, chain2, .id = 'chain') %>%
+  clean_names()
+
+# switch from wide to long
+long = reshape2::melt(chains, id=c('s','chain')) %>%
+  filter(str_detect(variable, 'beta0|^gamma')) %>% # just the intercept
+  mutate(variable = case_when(
+    variable == 'beta0' ~ 'Intercept',
+    variable == 'gamma1' ~ 'Authors +5',
+    variable == 'gamma2' ~ 'Time',
+    variable == 'gamma3' ~ 'Spelling error'
+  ))
+  
+# line plot
+cplot = ggplot(data=long, aes(x=s, y=value, col=factor(chain)))+
+  geom_line(lty=2)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())+
+  xlab('Iteration')+
+  ylab('Estimate')+
+  scale_color_manual('Chain', values=cbPalette[2:3])+
+  facet_wrap(~variable, scales = 'free_y')
+cplot
+# add acf?
+```
+
+The chains appear to have converged with good mixing.
+
+#### Densities for the intercept and word count estimates
+
+```{r densities, fig.width=7}
+# overlapping density plot
+hplot = ggplot(data=long, aes(x=value, fill=factor(chain)))+
+  geom_density(alpha=0.5)+
+  theme_bw()+
+  theme(panel.grid.minor = element_blank())+
+  xlab('Estimate')+
+  scale_fill_manual('Chain', values=cbPalette[2:3])+
+  facet_wrap(~variable, scales = 'free')
+hplot
+```
+
+

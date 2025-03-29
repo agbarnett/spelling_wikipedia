@@ -1,0 +1,276 @@
+---
+title: "Summary statistics for cases and controls"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B %Y')`"
+output: word_document
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "reports") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+library(dplyr)
+library(countrycode) # for long country name
+library(stringr) # used for country code
+library(flextable)
+library(naniar) # for missing data
+library(janitor)
+library(tableone) # for big summary table
+library(knitr)
+source('99_functions.R') # for my_country_long
+TeachingDemos::char2seed('blackpool')
+
+# graphics
+library(ggplot2)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+library(RColorBrewer)
+# colour blind friendly palette
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7") 
+
+# from 7_make_analysis_ready.R
+load('data/7_analysis_data.RData')
+```
+
+## Missing data
+
+```{r}
+# select variables to examine 
+for_missing = select(data, typeo, n_authors, open_access, publisher, country, word_count) %>%
+  mutate(country = ifelse(country == 'Missing', NA, country),
+         publisher = ifelse(publisher == 'Missing', NA, publisher))
+tab = miss_var_summary(for_missing)
+ftab = flextable(tab) %>%
+  autofit() %>%
+  theme_box()
+ftab
+```
+
+This table shows the number and percentage of missing data for the independent variables.
+
+
+## Case and control numbers
+
+```{r}
+tab = tabyl(data, case) %>%
+  mutate(percent = round(percent*1000)/10) # to 1 decimal place
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit() 
+ftab
+```
+
+The percentages are as close to expected 33:67 split with two controls per case. However, some cases were accidentally double-counted and hence some additional controls were added. 
+
+## Article types
+
+```{r}
+tab = tabyl(data, typeo) %>%
+  arrange(desc(n)) %>%
+  mutate(percent = round(percent*100),
+         percent = ifelse(percent==0, '<1', percent))
+names(tab)[1] = 'Type'
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+#### Article types by year and case
+
+```{r, fig.width=7}
+for_bar = group_by(data, typeo, year, case) %>%
+  tally() %>%
+  mutate(case = ifelse(case==1, "Case", 'Control'))
+bplot = ggplot(data = for_bar, aes(x = year, fill = factor(typeo), y = n)) +
+  geom_bar(position='stack', stat='identity')+
+  ylab('Count')+
+  xlab('Year')+
+  scale_fill_manual(NULL, values = cbPalette)+
+  g.theme+
+  facet_wrap(~case)
+bplot
+```
+
+
+## Publishers (top 20)
+
+```{r}
+tab = tabyl(data, publisher) %>%
+  arrange(desc(n)) %>%
+  mutate(percent = round(percent*100)) %>%
+  slice(1:20)
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+## Countries (top 20)
+
+```{r}
+country_tab = tabyl(data, country) %>%
+  arrange(desc(n)) %>%
+  mutate(percent = round(percent*100)) %>%
+  slice(1:20) 
+tab = mutate(country_tab, country = my_country_long(country))
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+#### Countries (top 10) over time and by case
+
+```{r, fig.width=7}
+for_plot = filter(data, 
+                  country %in% country_tab$country[1:10]) %>%
+  group_by(country, year, case) %>%
+  tally() %>%
+  mutate(case = ifelse(case==1, "Case", 'Control'))
+colours = brewer.pal('Set3', n = 10)
+lplot = ggplot(data = for_plot, aes(x = year, col=factor(country), y = n)) +
+  geom_line(linewidth=1.05)+
+  ylab('Count (log scale)')+
+  xlab('Year')+
+  scale_colour_manual('Country\ncode', values = colours)+
+  scale_y_log10()+
+  g.theme+
+  theme(legend.position = 'right')+
+  facet_wrap(~case)
+lplot
+```
+
+We show the top ten over time. We use the top 10 to reduce clutter. We use the log-scale on the y-axis as two countries are dominant.
+
+## Word count
+
+```{r}
+hplot = ggplot(data, aes(x=word_count)) +
+  geom_histogram(fill='darkseagreen3', col='grey77')+
+  xlab('Word count')+
+  ylab('Frequency')+
+  g.theme
+hplot
+```
+
+The word count distribution is bimodal because of short abstracts such as letters and retractions, and those abstracts that only have a title.
+
+#### Word count - Summary statistics
+
+```{r}
+stats = summarise(data,
+                  median = median(word_count),
+            q1 = quantile(word_count, 0.25),
+            q3 = quantile(word_count, 0.75))
+#
+ftab = flextable(stats) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+## Word count - log-transformed
+
+```{r}
+hplot = ggplot(data, aes(x=log10(word_count))) +
+  geom_histogram(fill='darkseagreen2', col='grey77')+
+  xlab('Word count (log 10)')+
+  ylab('Frequency')+
+  g.theme
+hplot
+```
+
+
+## Author numbers
+
+```{r authors}
+aplot = ggplot(data, aes(x=n_authors)) +
+  geom_bar(width=1, col='grey66', fill='darkseagreen3')+
+  xlab('Number of authors')+
+  ylab('Frequency')+
+  theme_bw()
+aplot
+```
+
+#### Author numbers - Summary statistics
+
+```{r}
+stats = summarise(data,
+                  median = median(n_authors),
+            q1 = quantile(n_authors, 0.25),
+            q3 = quantile(n_authors, 0.75))
+#
+ftab = flextable(stats) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+## Open access
+
+```{r}
+tab = mutate(data, open_access = ifelse(is.na(open_access), 'Missing', open_access)) %>%
+  tabyl(open_access) %>%
+  arrange(desc(n)) %>%
+  mutate(percent = round(percent*100),
+         percent = ifelse(percent==0, '<1', percent))
+names(tab)[1] = 'Open access'
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+## Retracted 
+
+```{r}
+tab = tabyl(data, retracted) %>%
+  arrange(desc(n)) %>%
+  mutate(percent = round(percent*1000)/10) # one decimal place
+ftab = flextable(tab) %>%
+  theme_box() %>%
+  autofit()
+ftab
+```
+
+## Overall summary table 
+
+This table is at the abstract level to avoid double-counting abstracts with more than one error.
+
+```{r summary_table}
+# get error counts per paper
+for_model = group_by(data, pmid, pubmed_date, typeo, country, publisher, case, word_count, n_authors) %>%
+  summarise(count = n()) %>% # number of errors
+  ungroup() %>%
+  mutate(count = ifelse(case == 0, 0, count)) # all controls have no errors
+
+# Create a TableOne object
+vars = c('year','typeo','open_access','n_authors','word_count','citations')
+cont_vars = c('year','n_authors','word_count','citations')
+for_table = mutate(for_model, case = ifelse(case==1, 'Case', 'Control'))
+summary_tab <- CreateTableOne(vars = vars, 
+                       data = for_table, 
+                       factorVars = NULL, 
+                       strata = 'case', 
+                       test = FALSE, 
+                       includeNA = TRUE,
+                       addOverall = FALSE) # no total column
+print(summary_tab, 
+      nonnormal = cont_vars, # use median instead of mean
+      catDigits = 1, # no longer allows 0 
+      contDigits = 1, 
+      explain = TRUE, 
+      showAllLevels = TRUE,
+formatOptions = list(big.mark = ""))
+```
+
+```{r include=FALSE}
+# export to latex
+p <- print(summary_tab, nonnormal = cont_vars, printToggle = FALSE, catDigits = 1, contDigits = 1, noSpaces = TRUE)
+out = file('reports/8_summary_table.tex', 'w')
+kable(p, format = "latex", digits=0) %>% cat(., file=out)
+close(out)
+```
+
+
+

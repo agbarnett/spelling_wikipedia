@@ -1,0 +1,27 @@
+---
+title: "Random selection of controls to check for spelling errors"
+author: "Adrian Barnett"
+output: word_document
+date: "`r format(Sys.time(), '%d %B %Y')`"
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "checks") })
+---
+
+```{r setup, include=FALSE}
+# called by 5_random_checks_controls.R
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, comment='', dpi=400)
+
+# from 5_random_checks_controls.R
+load('data/5_checks_controls.RData')
+```
+
+```{r, asis}
+for (k in 1:n_check){
+  cat('# PMID = ', abstracts[[k]]$pmid, '\n\n', sep='')
+  cat('Title = ', abstracts[[k]]$title, '\n', sep='')
+  if(!is.null(abstracts[[k]]$abstract)){
+    cat('Abstract = ', abstracts[[k]]$abstract, '\n\n', sep='')
+  }
+}
+```
+

@@ -1,0 +1,225 @@
+---
+title: "Trends in spelling errors in _PubMed_ from 2008 to 2023 using errors from the Wikipedia list"
+author: "Adrian Barnett"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: word_document
+knit: (function(inputFile, encoding) {
+  rmarkdown::render(inputFile, encoding = encoding, output_dir = "reports") })
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, comment='', dpi=400)
+library(dplyr)
+library(xtable) # for latex
+library(flextable)
+library(tidyr)
+library(stringr)
+library(ggplot2)
+library(ggrepel)
+library(gridExtra)
+library(colorspace)
+g.theme = theme_bw() + theme(panel.grid.minor = element_blank())
+# colour blind friendly palette
+cbPalette <- c("#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#999999", "#CC79A7") 
+
+# get the trend data from 8_make_trends.R
+load('data/8_trends.RData')
+
+# get the total number of errors
+total = filter(trends, error =='TOTAL') %>% summarise(total = sum(n)) %>% pull(total)
+```
+
+The total number of errors was `r format(total, big.mark=',')`.
+
+## Most common errors
+
+```{r}
+overall = filter(trends, error != 'TOTAL') %>% # remove total
+  group_by(error) %>%
+  summarise(total = sum(n)) %>%
+  ungroup() %>%
+  arrange(desc(total))
+worst = slice(overall, 1:20) 
+ftab = flextable(worst) %>%
+  autofit()
+ftab
+# export any errors that have more than 100 for checking
+over_100 = filter(overall, total >=100)
+#write.table(file = 'data/checks_incomplete.txt', over_100, quote=FALSE, row.names=FALSE, sep='\t')
+```
+
+Top twenty errors by overall total.
+
+```{r, include=FALSE}
+# export top 10 to latex
+print(xtable(head(worst,10), digits=0), include.rownames=FALSE, hline.after=FALSE, file = "9_top_ten.tex")
+```
+
+## Trend in total errors over time
+
+```{r}
+col = 'darkorchid2'
+total = filter(trends, error == 'TOTAL')
+trend_plot = ggplot(total, aes(x=year, y=p, ymin=lower, ymax=upper))+
+  geom_point(col = col)+
+  geom_line(col = col)+
+  geom_ribbon(alpha=0.5, fill=col)+
+  g.theme+
+  ylab('Errors per 10,000 abstracts')+
+  scale_y_continuous(limits=c(0,NA)) # start at zero
+trend_plot
+```
+
+## Trend by article type 
+
+TO DO.
+
+## Trends in top 10 errors
+
+```{r, fig.width=6, fig.height=5}
+n_to_plot = 10 # number to plot
+worst = slice(overall, 1:n_to_plot) %>% select(error)
+to_plot = left_join(worst, trends, by ='error') 
+# add labels at RHS
+labels = filter(to_plot, year==2024) %>% # select the last year
+  mutate(year = year + 1) # then move to the right
+# make colour for each line
+colours = terrain_hcl(n = n_to_plot)
+#
+mplot = ggplot(to_plot, aes(x=year, y=p, col = factor(error)))+
+  geom_line()+
+  geom_point()+
+  g.theme+
+  geom_label_repel(data = labels, aes(x=year, y=p, label=error, col=factor(error)), adj=0, fill='grey77', direction='y')+
+  theme(legend.position='none', 
+        panel.background = element_rect(fill='grey88'))+
+  scale_x_continuous(limits=c(2008,2032), breaks=seq(2008,2024,4))+ # more room at right-hand side
+  scale_color_manual(NULL, values= colours)+
+  ylab('Errors per 10,000 abstracts')+
+  xlab('Year')
+mplot
+
+# dodge not working, try a legend instead
+# or points with joining lines??
+
+# export
+ggsave(mplot, filename='figures/9_trends_top.jpg', width=6, height=4.5, units='in', dpi=500)
+```
+
+
+## Trends without ten most common errors
+
+```{r without, fig.width=6.5, fig.height=4}
+library(binom)
+without = NULL
+for (this_error in worst$error){
+  # knock out error
+  this_trend = filter(trends, !error %in% c('TOTAL',this_error))
+  # remake trends
+  remake = group_by(this_trend, year, denom) %>%
+    summarise(n = sum(n)) %>%
+    ungroup() %>%
+    mutate(error = this_error,
+           p = 10000*n / denom, # per 10,000 abstracts
+         lower = binom.exact(n = denom, x = n)$lower,
+         upper = binom.exact(n = denom, x = n)$upper,
+         lower = lower*10000,
+         upper = upper*10000)
+  without = bind_rows(without, remake)
+}
+# add labels at RHS
+labels = filter(to_plot, year==2024)
+# make colour for each line
+colours = terrain_hcl(n = n_to_plot)
+#
+mplot = ggplot(without, aes(x=year, y=p, col = factor(error)))+
+  geom_line()+
+  geom_point()+
+  g.theme+
+  theme(legend.position = 'right', 
+        panel.background = element_rect(fill='grey88'))+
+  scale_color_manual(NULL, values= colours)+
+  ylab('Errors per 10,000 abstracts')+
+  xlab('Year')
+mplot
+# export
+ggsave(mplot, filename='figures/9_trends_without_top.jpg', width=6.5, height=4.5, units='in', dpi=500)
+```
+
+The trend does not just depend on the most common errors.
+
+## Trend in word count over time
+
+This trend is for the analysis data of cases and controls. The trend is for all article types combined.
+
+```{r word_count, fig.width = 7}
+colour = 'pink'
+wplot = ggplot(word_counts, aes(x=year, y=mean, ymin=lower, ymax=upper))+
+  geom_point(colour = col)+
+  geom_line(colour = col)+
+  geom_ribbon(alpha=0.5, fill=col)+
+  g.theme+
+  xlab('Year')+
+  ylab('Mean word count')
+#  scale_y_continuous(limits=c(0,NA)) # start at zero
+wplot
+```
+
+The y-axis does not start at zero.
+
+#### Trend in word count by article type
+
+The plot below is the mean word count by article type.
+
+```{r word_count_split, fig.width = 8}
+# to do? limit sample to 50
+#word_counts_type = filter(word_counts_type, n>50)
+#
+wplot = ggplot(word_counts_type, aes(x=year, y=mean, ymin=lower, ymax=upper, col=typeo, fill=typeo, group=typeo))+
+  geom_point()+
+  geom_line()+
+  scale_colour_manual('Type', values = cbPalette)+
+  scale_fill_manual('Type', values = cbPalette)+
+  geom_ribbon(alpha=0.5)+
+  g.theme+
+  xlab('Year')+
+  ylab('Mean word count')+
+  scale_y_continuous(limits=c(0,NA)) # start at zero
+wplot
+```
+
+There are some missing values as we only plot years with a sample size of at least 50.
+
+## Trend per word count
+
+As an alternative denominator to per abstract, we now run the trend per word per abstract.
+
+```{r per_word}
+#
+col = 'darkorange2'
+trend_plot_word = ggplot(data = trends_words, aes(x = year, y = p, ymin=lower, ymax=upper))+
+  geom_point(col = col)+
+  geom_line(col = col)+
+  geom_ribbon(alpha = 0.5, fill=col)+
+  ylab('Errors per 1 million words')+
+  xlab('Year')+
+  scale_y_continuous(limits = c(0,NA))+
+  g.theme
+trend_plot_word
+```
+
+```{r, include = FALSE}
+# put plots together for figure
+trend_plot = trend_plot + ggtitle('Per abstracts')
+trend_plot_word = trend_plot_word + ggtitle('Per words')
+jpeg('figures/9_trends.jpg', width=6, height=4.5, units='in', res=500)
+grid.arrange(trend_plot, trend_plot_word, ncol=2)
+invisible(dev.off())
+
+# alternative version with two rows
+trend_plot = trend_plot + ggtitle('Per abstracts') + xlab(NULL)
+trend_plot_word = trend_plot_word + ggtitle('Per words')
+jpeg('figures/9_trends_rows.jpg', width=4, height=5.9, units='in', res=500)
+grid.arrange(trend_plot, trend_plot_word, ncol=1)
+invisible(dev.off())
+```
