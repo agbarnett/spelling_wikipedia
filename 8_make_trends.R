@@ -1,13 +1,13 @@
 # 8_make_trends.R
 # calculate the trends with a denominator of abstract numbers and word count
-# February 2025
+# July 2025
 library(dplyr)
 library(binom) # for confidence intervals
 
 # get the data from 7_make_analysis_ready.R
 load('data/7_analysis_data.RData')
 indata = data # simple rename
-# get the denominator, from 1_pubmed_denominator.R
+# get the denominators, from 1_pubmed_denominator.R
 load('data/1_denominator.RData')
 
 ## part 0: get average word counts for cases and controls (used later)
@@ -94,7 +94,29 @@ freqs_word = select(total, year, n, denom) %>%
          lower = lower*1000000,
          upper = upper*1000000)
 
-# save
+
+#### part 4) trends by article type
+selected_type = c('Article','Editorial','Letter','Review') # just these predominant types as others are too small
+freqs_type = filter(indata, typeo %in% selected_type) %>%
+  group_by(year, typeo) %>% 
+  tally() %>%
+  ungroup()
+# add zero years/errors
+full = expand.grid(year = years, typeo = selected_type)
+freqs_type = full_join(freqs_type, full, by=c('year','typeo')) %>%
+  mutate(n = ifelse(is.na(n), 0, n)) 
+freqs_type = left_join(freqs_type, denom_type, by=c('year','typeo')) %>%
+  mutate(p = 10000*n / denom, # per 10,000 abstracts
+         lower = binom.exact(n = denom, x = n)$lower,
+         upper = binom.exact(n = denom, x = n)$upper,
+         lower = lower*10000,
+         upper = upper*10000)
+#
+freqs_type = arrange(freqs_type, typeo, year)
+
+
+## save ##
 trends = freqs
+trends_type = freqs_type
 trends_words = freqs_word
-save(per_abstract, trends, trends_words, word_counts, word_counts_type, file='data/8_trends.RData')
+save(per_abstract, trends, trends_type, trends_words, word_counts, word_counts_type, file='data/8_trends.RData')

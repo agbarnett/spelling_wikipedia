@@ -13,6 +13,7 @@ knitr::opts_chunk$set(echo = FALSE, warning=FALSE, message=FALSE, error=FALSE, c
 library(dplyr)
 library(janitor)
 library(flextable)
+library(xtable) # for latex
 library(tidyr)
 library(stringr)
 library(countrycode)
@@ -51,6 +52,7 @@ articles = filter(df, str_detect(var, '^beta3')) %>%
   left_join(fr, by = 'number')
 # now get other estimates that suit a table
 other = filter(df, var %in% c('gamma1'))
+other_latex = filter(df, var %in% c('beta0','gamma1','gamma2','gamma3')) # alternative for latex
 # make table with rate ratios
 to_table = bind_rows(other, articles) %>%
   mutate(var = case_when(
@@ -70,11 +72,34 @@ to_table = bind_rows(other, articles) %>%
   select(var, mean, lower, upper, pval) %>%
   rename('posterior probability' = 'pval',
          'Variable' = 'var') 
+# make table with rate ratios (version for latex)
+to_table_latex = bind_rows(other_latex, articles) %>%
+  mutate(var = case_when(
+    var == 'beta0' ~ 'Intercept',
+    var == 'gamma1' ~ 'Authors +5',
+    var == 'gamma2' ~ 'Time', # plotted below instead
+    var == 'gamma3' ~ 'Spelling error (yes vs no)' # plotted below instead
+  ),
+  var = ifelse(is.na(var), label, var), # for articles
+  mean = exp(mean), # convert to RR
+  lower = exp(lower),
+  upper = exp(upper),
+  pval = format.pval(pval, digits=4, eps = 0.001),
+  lower = ifelse(var =='Article', NA, lower), # this is the reference category
+  upper = ifelse(var =='Article', NA, upper),
+  pval = ifelse(var =='Article', NA, pval)
+  ) %>%
+  select(var, mean, lower, upper, pval) %>%
+  rename('posterior probability' = 'pval',
+         'Variable' = 'var') 
+# nice table
 ftab = flextable(to_table) %>%
   theme_box() %>%
   colformat_double(j=2:4, digits=2) %>%
   autofit() 
 ftab
+# output table to latex
+print(xtable(to_table_latex, digits=4), include.rownames=FALSE, hline.after=FALSE, file = "reports/10_table_citations_model.tex")
 ```
 
 The table shows the mean rate ratio, 95% credible interval, and posterior probability that the estimate is zero.
@@ -129,7 +154,7 @@ gplot = ggplot(data = to_plot, aes(x = errors, y = mean, ymin = lower, ymax = up
   ylab('Rate ratio')+
   xlab('Number of spelling errors')+
   scale_x_continuous(breaks = 0:2, labels = labels)+
-  scale_y_log10(breaks=seq(0.92,1,0.02))+ #
+  scale_y_continuous(breaks=seq(0.92,1,0.02))+ #
   geom_hline(col='dark red', lty=2, yintercept=1) # on rate ratio scale
 gplot
 
@@ -137,7 +162,26 @@ gplot
 ggsave(filename = 'figures/10_articles_horseshoe_citations.jpg', gplot, width=5, height=4, units='in', dpi=500)
 ```
 
-The maximum number of errors was 4, but we only plot up to 2 as there were very few abstracts with 3 or 4 errors.
+The maximum number of errors per abstract was 4, but we only plot up to 2 as there were very few abstracts with 3 or 4 errors.
+
+#### Absolute scale
+
+```{r absolute, include=FALSE}
+# regression equations:
+log.mu = rep(NA, 3)
+log.mu[1] = 2.9986211 -0.0110712 * (((1+0)^2)-1) # squared and centred, zero
+log.mu[2] = 2.9986211 -0.0110712 * (((1+1)^2)-1) # squared and centred, one
+log.mu[3] = 2.9986211 -0.0110712 * (((1+2)^2)-1) # squared and centred, two errors
+mean0 = round(exp(log.mu[1])*10)/10
+mean1 = round(exp(log.mu[2])*10)/10
+mean2 = round(exp(log.mu[3])*10)/10
+diff1 = round((exp(log.mu[1]) - exp(log.mu[2]))*10)/10
+diff2 = round((exp(log.mu[1]) - exp(log.mu[3]))*10)/10
+```
+
+To provide context to the relative reduction, we estimate the absolute reduction in citations. 
+After seven years, the average number of citations for an abstract with no spelling errors is `r mean0` and for an abstract with one spelling error is `r mean1` and for an abstract with two spelling errors is `r mean2`. 
+The absolute reduction in citations for abstracts with one spelling error is `r diff1` and for two spelling errors is `r diff2`. 
 
 ## Estimate of time
 

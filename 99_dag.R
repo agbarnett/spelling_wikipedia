@@ -18,6 +18,7 @@ dag_e <- dagify(spelling ~ type, # expect fewer errors for editorials
                 #spelling ~ country, # English speakers will have fewer errors (happens via native English speaker)
                 spelling ~ editorial, # Spelling depends on editorial controls
                 english ~ country, # language skills depend on country
+                #software ~ english, # non-English speakers will more often use spell checks
                 #english ~ time, # more non-English speakers over time; assume fully explained by country
                 publisher ~ country, # Some countries will more heavily use some publishers
                 publisher ~ time, # Publishers have changed over time

@@ -52,7 +52,7 @@ Top twenty errors by overall total.
 
 ```{r, include=FALSE}
 # export top 10 to latex
-print(xtable(head(worst,10), digits=0), include.rownames=FALSE, hline.after=FALSE, file = "9_top_ten.tex")
+print(xtable(head(worst,10), digits=0), include.rownames=FALSE, hline.after=FALSE, file = "reports/9_top_ten.tex")
 ```
 
 ## Trend in total errors over time
@@ -72,7 +72,21 @@ trend_plot
 
 ## Trend by article type 
 
-TO DO.
+```{r types}
+trend_plot_type = ggplot(trends_type, aes(x=year, y=p, ymin=lower, ymax=upper, col=factor(typeo), fill=factor(typeo)))+
+  geom_point()+
+  geom_line()+
+  geom_ribbon(alpha=0.5)+
+  scale_color_manual(NULL, values = cbPalette)+
+  scale_fill_manual(NULL, values = cbPalette)+
+  g.theme+
+  ylab('Errors per 10,000 abstracts')+
+  scale_y_continuous(limits=c(0,NA)) # start at zero
+trend_plot_type
+# export
+ggsave(trend_plot_type, filename='figures/9_trends_by_type.jpg', width=6, height=4.5, units='in', dpi=500)
+```
+
 
 ## Trends in top 10 errors
 
@@ -143,7 +157,7 @@ mplot = ggplot(without, aes(x=year, y=p, col = factor(error)))+
   xlab('Year')
 mplot
 # export
-ggsave(mplot, filename='figures/9_trends_without_top.jpg', width=6.5, height=4.5, units='in', dpi=500)
+ggsave(mplot, filename='figures/9_trends_without_top.jpg', width=7.5, height=4.5, units='in', dpi=600)
 ```
 
 The trend does not just depend on the most common errors.

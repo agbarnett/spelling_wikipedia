@@ -14,7 +14,7 @@ The files are ordered in their execution order, which is:
 * 8_ run the statistical models; create the trend data
 * 9_ present the trend results
 * 10_ present the results of the regression models
-* 99_ Miscellaneous files and functions
+* 99_ miscellaneous files and functions
 
 Subfolders:
 * `figures` for figures
@@ -23,7 +23,7 @@ Subfolders:
 * `reports` for the reports in _Word_ format
 
 
-<details><summary>#### R version and packages</summary>
+<details><summary>R version and packages</summary>
 <p>
 
 ```
